@@ -1,8 +1,10 @@
-const Nimiq = require('@nimiq/core');
 const https = require('https');
-const WebSocket = require('uws');
+const WebSocket = require('ws');
 const mysql = require('mysql2/promise');
 const fs = require('fs');
+
+const Nimiq = require('@nimiq/core');
+const JungleDb = require('@nimiq/jungle-db');
 
 const PoolAgent = require('./PoolAgent.js');
 const Helper = require('./Helper.js');
@@ -53,6 +55,24 @@ class PoolServer extends Nimiq.Observable {
         /** @type {Set.<PoolAgent>} */
         this._agents = new Set();
 
+        /** @type {Nimiq.HashMap.<number, Array.<Nimiq.Hash>>} */
+        this._shares = new Nimiq.HashMap();
+
+        /** @type {Array.<(userId: Nimiq.Address, device: number, prevBlockId: number)>} */
+        this._shareSummary = [];
+
+        /** @type {Nimiq.HashMap.<Nimiq.NetAddress, number>} */
+        this._connectionsInTimePerIPv4 = new Nimiq.HashMap();
+
+        /** @type {Nimiq.HashMap.<Uint8Array, number>} */
+        this._connectionsInTimePerIPv6 = new Nimiq.HashMap();
+
+        /** @type {Nimiq.HashMap.<Nimiq.NetAddress, number>} */
+        this._connectionsPerIPv4 = new Nimiq.HashMap();
+
+        /** @type {Nimiq.HashMap.<Uint8Array, number>} */
+        this._connectionsPerIPv6 = new Nimiq.HashMap();
+
         /** @type {Nimiq.HashMap.<Nimiq.NetAddress, number>} */
         this._bannedIPv4IPs = new Nimiq.HashMap();
 
@@ -62,8 +82,8 @@ class PoolServer extends Nimiq.Observable {
         /** @type {number} */
         this._numBlocksMined = 0;
 
-        /** @type {number} */
-        this._totalShareDifficulty = 0;
+        /** @type {Nimiq.BigNumber} */
+        this._totalShareDifficulty = new Nimiq.BigNumber(0);
 
         /** @type {number} */
         this._lastShareDifficulty = 0;
@@ -77,9 +97,19 @@ class PoolServer extends Nimiq.Observable {
         /** @type {boolean} */
         this._started = false;
 
+        /** @type {JungleDb.LRUMap} */
+        this._userAddressToId = new JungleDb.LRUMap(200);
+
+        /** @type {JungleDb.LRUMap} */
+        this._blockHashToId = new JungleDb.LRUMap(10);
+
+        setInterval(() => { this._bannedIPv4IPs = new Nimiq.HashMap(); this._bannedIPv6IPs = new Nimiq.HashMap(); }, this.config.maxConnTimeUnit);
+
         setInterval(() => this._checkUnbanIps(), PoolServer.UNBAN_IPS_INTERVAL);
 
         setInterval(() => this._calculateHashrate(), PoolServer.HASHRATE_INTERVAL);
+
+        setInterval(() => this._flushSharesToDb(), this._config.flushSharesInterval);
 
         this.consensus.on('established', () => this.start());
     }
@@ -101,7 +131,11 @@ class PoolServer extends Nimiq.Observable {
         this._wss = PoolServer.createServer(this.port, this._sslKeyPath, this._sslCertPath);
         this._wss.on('connection', (ws, req) => this._onConnection(ws, req));
 
-        this.consensus.blockchain.on('head-changed', (head) => this._announceHeadToNano(head));
+        this.consensus.blockchain.on('head-changed', (head) => {
+            this._announceHeadToNano(head);
+            this._flushSharesToDb();
+            this._removeOldShares(head.header.prevHash);
+        });
     }
 
     static createServer(port, sslKeyPath, sslCertPath) {
@@ -136,7 +170,11 @@ class PoolServer extends Nimiq.Observable {
         try {
             const netAddress = Nimiq.NetAddress.fromIP(req.connection.remoteAddress);
             if (this._isIpBanned(netAddress)) {
-                Nimiq.Log.i(PoolServer, `Banned IP tried to connect ${netAddress}`);
+                Nimiq.Log.i(PoolServer, `[${netAddress}] Banned IP tried to connect`);
+                ws.close();
+            } else if (this._newIpConnTooMany(netAddress))  {
+                Nimiq.Log.i(PoolServer, `[${netAddress}] Rejecting connection from IP having established too many connections (lately)`);
+                ws.send(JSON.stringify({ message: PoolAgent.MESSAGE_ERROR, reason: 'too many consecutive or total connections per IP' }));
                 ws.close();
             } else {
                 const agent = new PoolAgent(this, ws, netAddress);
@@ -152,11 +190,11 @@ class PoolServer extends Nimiq.Observable {
 
     /**
      * @param {Nimiq.BlockHeader} header
-     * @param {number} difficulty
+     * @param {Nimiq.BigNumber} difficulty
      * @private
      */
     _onShare(header, difficulty) {
-        this._totalShareDifficulty += difficulty;
+        this._totalShareDifficulty = this._totalShareDifficulty.plus(difficulty);
     }
 
     /**
@@ -248,14 +286,45 @@ class PoolServer extends Nimiq.Observable {
         }
     }
 
+    /**
+     * @param {Nimiq.NetAddress} netAddress
+     * @returns {boolean}
+     * @private
+     */
+    _newIpConnTooMany(netAddress) {
+        if (!netAddress.isPrivate()) {
+            if (netAddress.isIPv4()) {
+                const currTotalCount = this._connectionsPerIPv4.get(netAddress) || 0;
+                const currRateCount = this._connectionsInTimePerIPv4.get(netAddress) || 0;
+                if (currTotalCount >= this.config.maxConnPerIP || currRateCount >= this.config.maxConnInTimePerIP) {
+                    return true;
+                }
+                this._connectionsPerIPv4.put(netAddress, currTotalCount + 1);
+                this._connectionsInTimePerIPv4.put(netAddress, currRateCount + 1);
+                console.log('rates', currTotalCount + 1, currRateCount + 1);
+            } else if (netAddress.isIPv6()) {
+                const prefix = netAddress.ip.subarray(0, 8);
+                const currTotalCount = this._connectionsPerIPv6.get(prefix) || 0;
+                const currRateCount = this._connectionsInTimePerIPv6.get(prefix) || 0;
+                if (currTotalCount >= this.config.maxConnPerIP || currRateCount >= this.config.maxConnInTimePerIP) {
+                    return true;
+                }
+                this._connectionsPerIPv6.put(prefix, currTotalCount + 1);
+                this._connectionsInTimePerIPv6.put(prefix, currRateCount + 1);
+                console.log('rates', currTotalCount + 1, currRateCount + 1);
+            }
+        }
+        return false;
+    }
+
     _calculateHashrate() {
         if (!this.consensus.established) return;
 
-        const shareDifficulty = this._totalShareDifficulty - this._lastShareDifficulty;
+        const shareDifficulty = this._totalShareDifficulty.minus(this._lastShareDifficulty);
         this._lastShareDifficulty = this._totalShareDifficulty;
 
-        const hashrate = shareDifficulty / (PoolServer.HASHRATE_INTERVAL / 1000) * Math.pow(2 ,16);
-        this._hashrates.push(Math.round(hashrate));
+        const hashrate = shareDifficulty.div(PoolServer.HASHRATE_INTERVAL / 1000).times(Math.pow(2 ,16));
+        this._hashrates.push(Math.round(hashrate.toNumber()));
         if (this._hashrates.length > 10) this._hashrates.shift();
 
         let hashrateSum = 0;
@@ -270,28 +339,87 @@ class PoolServer extends Nimiq.Observable {
     /**
      * @param {number} userId
      * @param {number} deviceId
-     * @param {Nimiq.Hash} prevHash
-     * @param {number} prevHashHeight
-     * @param {number} difficulty
-     * @param {Nimiq.Hash} shareHash
+     * @param {Nimiq.BlockHeader} header
+     * @param {Nimiq.BigNumber} difficulty
      */
-    async storeShare(userId, deviceId, prevHash, prevHashHeight, difficulty, shareHash) {
-        let prevHashId = await Helper.getStoreBlockId(this.connectionPool, prevHash, prevHashHeight);
-        const query = "INSERT INTO share (user, device, datetime, prev_block, difficulty, hash) VALUES (?, ?, ?, ?, ?, ?)";
-        const queryArgs = [userId, deviceId, Date.now(), prevHashId, difficulty, shareHash.serialize()];
-        await this.connectionPool.execute(query, queryArgs);
+    async storeShare(userId, deviceId, header, difficulty) {
+        this._shareSummary.push({
+            userId: userId,
+            device: deviceId,
+            prevBlockId: await this._getStoreBlockId(header.prevHash, header.height - 1, header.timestamp),
+            difficulty: difficulty
+        });
+
+        let submittedShares = new Nimiq.HashMap();
+        if (!this._shares.contains(userId)) {
+            this._shares.put(userId, submittedShares);
+        } else {
+            submittedShares = this._shares.get(userId);
+        }
+        let sharesForPrevious = [];
+        if (!submittedShares.contains(header.prevHash.toString())) {
+            submittedShares.put(header.prevHash.toString(), sharesForPrevious);
+        } else {
+            sharesForPrevious = submittedShares.get(header.prevHash);
+        }
+        if (!sharesForPrevious.includes(header.hash().toString())) {
+            sharesForPrevious.push(header.hash().toString());
+        } else {
+            throw new Error("Share inserted twice");
+        }
     }
 
     /**
      * @param {number} user
-     * @param {string} shareHash
+     * @param {Nimiq.Hash} shareHash
      * @returns {boolean}
      */
     async containsShare(user, shareHash) {
-        const query = "SELECT * FROM share WHERE user=? AND hash=?";
-        const queryArgs = [user, shareHash.serialize()];
-        const [rows, fields] = await this.connectionPool.execute(query, queryArgs);
-        return rows.length > 0;
+        if (this._shares.contains(user)) {
+            const userHashesMap = this._shares.get(user);
+            for (const key of userHashesMap.keys()) {
+                if (userHashesMap.get(key).includes(shareHash.toString())) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    async _flushSharesToDb() {
+        if (this._shareSummary.length === 0) return;
+        let sharesBackup = this._shareSummary;
+        this._shareSummary = [];
+
+        let query = `
+            INSERT INTO shares (user, device, prev_block, count, difficulty)
+            VALUES ` + Array(sharesBackup.length).fill('(?,?,?,?,?)').join(', ') + ` ` +
+            `ON DUPLICATE KEY UPDATE count=count+1, difficulty=difficulty+values(difficulty)`;
+        let queryArgs = [];
+        for (const summary of sharesBackup) {
+            queryArgs.push(summary.userId, summary.device, summary.prevBlockId, 1, +summary.difficulty);
+        }
+        await this.connectionPool.execute(query, queryArgs);
+    }
+
+    /**
+     * @param {Nimiq.Hash} oldShareHash
+     * @private
+     */
+    async _removeOldShares(oldShareHash) {
+        for (let userId of this._shares.keys()) {
+            let userHashesMap = this._shares.get(userId);
+            for (let key of userHashesMap.keys()) {
+                if (key === oldShareHash.toString()) {
+                    userHashesMap.remove(key);
+                } else {
+                    const block = await this.consensus.blockchain.getBlock(Nimiq.Hash.fromBase64(key));
+                    if (block && block.header.timestamp * 1000 > this.consensus.network.time + Nimiq.Block.TIMESTAMP_DRIFT_MAX * 1000) {
+                        userHashesMap.remove(key);
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -323,19 +451,54 @@ class PoolServer extends Nimiq.Observable {
     }
 
     /**
+     * @param {Nimiq.Hash} blockHash
+     * @param {number} height
+     * @param {number} timestamp
+     * @returns {Promise.<number>}
+     */
+    async _getStoreBlockId(blockHash, height, timestamp) {
+        let id = this._blockHashToId.get(blockHash);
+        if (!id) {
+            id = await Helper.getStoreBlockId(this.connectionPool, blockHash, height, timestamp);
+            this._blockHashToId.set(blockHash, id);
+        }
+        return Promise.resolve(id);
+    }
+
+    /**
      * @param {Nimiq.Address} addr
      * @returns {Promise.<number>}
      */
     async getStoreUserId(addr) {
-        await this.connectionPool.execute("INSERT IGNORE INTO user (address) VALUES (?)", [addr.toBase64()]);
-        const [rows, fields] = await this.connectionPool.execute("SELECT id FROM user WHERE address=?", [addr.toBase64()]);
-        return rows[0].id;
+        let userId = this._userAddressToId.get(addr);
+        if (!userId) {
+            userId = await Helper.getStoreUserId(this.connectionPool, addr);
+            this._userAddressToId.set(addr, userId);
+        }
+        return userId;
     }
 
     /**
      * @param {PoolAgent} agent
      */
     removeAgent(agent) {
+        if (!agent.netAddress.isPrivate()) {
+            // Remove one connection from total count per IP
+            if (agent.netAddress.isIPv4()) {
+                const currTotalCount = this._connectionsPerIPv4.get(agent.netAddress) || 0;
+                if (currTotalCount <= 1) {
+                    this._connectionsPerIPv4.remove(agent.netAddress);
+                }
+                this._connectionsPerIPv4.put(agent.netAddress, currTotalCount - 1);
+            } else if (agent.netAddress.isIPv6()) {
+                const prefix = agent.netAddress.ip.subarray(0, 8);
+                const currTotalCount = this._connectionsPerIPv6.get(prefix) || 0;
+                if (currTotalCount <= 1) {
+                    this._connectionsPerIPv6.remove(prefix);
+                }
+                this._connectionsPerIPv6.put(prefix, currTotalCount - 1);
+            }
+        }
         this._agents.delete(agent);
     }
 

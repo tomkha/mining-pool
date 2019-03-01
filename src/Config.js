@@ -6,21 +6,6 @@ const Log = require('@nimiq/core').Log;
 const TAG = 'Config';
 
 /**
- * @typedef {object} PoolConfig
- * @property {string} name
- * @property {string} address
- * @property {number} payoutConfirmations
- * @property {number} autoPayOutLimit
- * @property {number} poolFee
- * @property {number} networkFee
- * @property {number} minDifficulty
- * @property {number} spsTimeUnit
- * @property {number} desiredSps
- * @property {number} connectionTimeout
- * @property {number} pplnsShares
- */
-
-/**
  * @typedef {object} Config
  * @property {string} host
  * @property {{cert: string, key: string}} tls
@@ -37,7 +22,6 @@ const TAG = 'Config';
  * @property {Array.<{host: string, port: number, publicKey: string}>} seedPeers
  * @property {object} constantOverrides
  */
-
 const DEFAULT_CONFIG = /** @type {Config} */ {
     host: null,
     tls: {
@@ -59,9 +43,14 @@ const DEFAULT_CONFIG = /** @type {Config} */ {
         minDifficulty: 1,
         spsTimeUnit: 60000, // 1 minute
         desiredSps: 0.2, // desired shares per second
+        pplnsBlocks: 10,
+        flushSharesInterval: 1000 * 10, // 10 seconds
         connectionTimeout: 60 * 1000 * 10, // 10 minutes
-        pplnsShares: 1000,
-        allowedErrors: 3
+        maxConnPerIP: 100,
+        maxConnInTimePerIP: 50,
+        maxConnTimeUnit: 1000 * 60 * 5,
+        databaseRetentionBlocks: 0,
+        allowedErrors: 30
     },
     poolServer: {
         enabled: false,
@@ -123,7 +112,8 @@ const CONFIG_TYPES = {
             spsTimeUnit: 'number',
             desiredSps: 'number',
             connectionTimeout: 'number',
-            pplnsShares: 'number',
+            pplnsBlocks: 'number',
+            flushSharesInterval: 'number',
             allowedErrors: 'number'
         }
     },

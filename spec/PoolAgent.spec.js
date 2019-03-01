@@ -7,6 +7,7 @@ const PoolServer = require('../src/PoolServer.js');
 
 describe('PoolAgent', () => {
 
+    let sessionNonce = 0;
     beforeEach(() => {
         spyOn(PoolServer, 'createServer').and.callFake(() => {
             return {
@@ -14,6 +15,7 @@ describe('PoolAgent', () => {
                 close: () => {}
             };
         });
+        spyOn(PoolAgent, '_generateSessionNonce').and.callFake(() => sessionNonce);
     });
 
     async function generateBlockMessage(minerAddr, extraData, fixTime, target) {
@@ -32,7 +34,7 @@ describe('PoolAgent', () => {
         // console.log(blockHeader64);
         // miner.shareTarget = target;
         // miner.on('share', async (block) => {
-        //     console.log(block);
+        //     console.log(blockHeader64, block.header.nonce);
         // });
         // miner.startWork();
         block.header.nonce = nonces[blockHeader64];
@@ -53,15 +55,20 @@ describe('PoolAgent', () => {
 
             const time = new Nimiq.Time();
             spyOn(time, 'now').and.callFake(() => 0);
+            sessionNonce = NQ43sampleData.register.deviceId;
 
+            let settingsMsg;
             const poolAgent = new PoolAgent(poolServer, {
                 close: () => {},
+                ping: () => {},
                 send: async (json) => {
                     const msg = JSON.parse(json);
                     if (msg.message === 'settings') {
-                        const poolAddress = Nimiq.Address.fromUserFriendlyAddress(msg.address);
-                        const extraData = Nimiq.BufferUtils.fromBase64(msg.extraData);
-                        const target = parseFloat(msg.target);
+                        settingsMsg = msg;
+                    } else if (msg.message === 'balance') {
+                        const poolAddress = Nimiq.Address.fromUserFriendlyAddress(settingsMsg.address);
+                        const extraData = Nimiq.BufferUtils.fromBase64(settingsMsg.extraData);
+                        const target = parseFloat(settingsMsg.target);
 
                         let userId = await poolServer.getStoreUserId(NQ43sampleData.address);
 
@@ -91,6 +98,50 @@ describe('PoolAgent', () => {
         })().catch(done.fail);
     });
 
+    it('does not alow to submit shares twice (smart mode)', (done) => {
+        (async () => {
+            const consensus = await Nimiq.Consensus.volatileFull();
+            const poolServer = new PoolServer(consensus, POOL_CONFIG, 9999, '', '', '', '');
+            await poolServer.start();
+
+            const time = new Nimiq.Time();
+            spyOn(time, 'now').and.callFake(() => 0);
+            sessionNonce = NQ43sampleData.register.deviceId;
+
+            let settingsMsg;
+            const poolAgent = new PoolAgent(poolServer, {
+                close: () => {},
+                ping: () => {},
+                send: async (json) => {
+                    const msg = JSON.parse(json);
+                    if (msg.message === 'settings') {
+                        settingsMsg = msg;
+                    } else if (msg.message == 'balance') {
+                        const poolAddress = Nimiq.Address.fromUserFriendlyAddress(settingsMsg.address);
+                        const extraData = Nimiq.BufferUtils.fromBase64(settingsMsg.extraData);
+                        const target = parseFloat(settingsMsg.target);
+
+                        let userId = await poolServer.getStoreUserId(NQ43sampleData.address);
+
+                        // valid share
+                        let shareMsg = await generateBlockMessage(poolAddress, extraData, time, target);
+                        await poolAgent._onMessage(shareMsg);
+                        let hash = Nimiq.BlockHeader.unserialize(Nimiq.BufferUtils.fromBase64(shareMsg.blockHeader)).hash();
+                        expect(await poolServer.containsShare(userId, hash)).toBeTruthy();
+
+                        // Submit valid share twice
+                        try {
+                            await poolAgent._onMessage(shareMsg);
+                        } catch (e) {
+                            done();
+                        }
+                    }
+                }
+            }, Nimiq.NetAddress.fromIP('1.2.3.4'));
+            await poolAgent._onMessage(NQ43sampleData.register);
+        })().catch(done.fail);
+    });
+
     it('does not count shares onto old blocks (smart mode)', (done) => {
         (async () => {
             const consensus = await Nimiq.Consensus.volatileFull();
@@ -100,15 +151,20 @@ describe('PoolAgent', () => {
             let fixFakeTime = 0;
             const time = new Nimiq.Time();
             spyOn(time, 'now').and.callFake(() => fixFakeTime);
+            sessionNonce = NQ43sampleData.register.deviceId;
 
+            let settingsMsg;
             const poolAgent = new PoolAgent(poolServer, {
                 close: () => {},
+                ping: () => {},
                 send: async (json) => {
                     const msg = JSON.parse(json);
                     if (msg.message === 'settings') {
-                        const poolAddress = Nimiq.Address.fromUserFriendlyAddress(msg.address);
-                        const extraData = Nimiq.BufferUtils.fromBase64(msg.extraData);
-                        const target = parseFloat(msg.target);
+                        settingsMsg = msg;
+                    } else if (msg.message == 'balance') {
+                        const poolAddress = Nimiq.Address.fromUserFriendlyAddress(settingsMsg.address);
+                        const extraData = Nimiq.BufferUtils.fromBase64(settingsMsg.extraData);
+                        const target = parseFloat(settingsMsg.target);
 
                         let userId = await poolServer.getStoreUserId(NQ43sampleData.address);
 
@@ -139,14 +195,19 @@ describe('PoolAgent', () => {
             await poolServer.start();
             const time = new Nimiq.Time();
             spyOn(time, 'now').and.callFake(() => 0);
+            sessionNonce = NQ43sampleData.register.deviceId;
 
+            let settingsMsg;
             const poolAgent = new PoolAgent(poolServer, {
                 close: () => { },
+                ping: () => {},
                 send: async (json) => {
                     const msg = JSON.parse(json);
                     if (msg.message === 'settings') {
-                        const extraData = Nimiq.BufferUtils.fromBase64(msg.extraData);
-                        const target = parseFloat(msg.target);
+                        settingsMsg = msg;
+                    } else if (msg.message === 'balance') {
+                        const extraData = Nimiq.BufferUtils.fromBase64(settingsMsg.extraData);
+                        const target = parseFloat(settingsMsg.target);
 
                         poolServer.config.allowedErrors = 2;
 
@@ -173,8 +234,6 @@ describe('PoolAgent', () => {
             const consensus = await Nimiq.Consensus.volatileFull();
             const poolServer = new PoolServer(consensus, POOL_CONFIG, 9999, '', 'localhost', '', '');
             await poolServer.start();
-            const poolAgent = new PoolAgent(poolServer, { close: () => {}, send: () => {} }, Nimiq.NetAddress.fromIP('1.2.3.4'));
-            spyOn(poolAgent, '_regenerateNonce').and.callFake(() => { poolAgent._nonce = 42 });
 
             const registerMsg = {
                 message: 'register',
@@ -183,6 +242,11 @@ describe('PoolAgent', () => {
                 mode: 'smart',
                 genesisHash: Nimiq.BufferUtils.toBase64(Nimiq.GenesisConfig.GENESIS_HASH.serialize())
             };
+
+            sessionNonce = registerMsg.deviceId;
+            const poolAgent = new PoolAgent(poolServer, { close: () => {}, send: () => {} }, Nimiq.NetAddress.fromIP('1.2.3.4'));
+            spyOn(poolAgent, '_regenerateNonce').and.callFake(() => { poolAgent._nonce = 42 });
+
             await poolAgent._onMessage(registerMsg);
 
             async function sendSignedPayoutRequest(usedKeyPair) {

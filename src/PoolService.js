@@ -40,8 +40,11 @@ class PoolService extends Nimiq.Observable {
             database: 'pool'
         });
 
-        this.consensus.blockchain.on('head-changed', (head) => this._distributePayinsForBlock(head));
-        this.consensus.blockchain.on('head-changed', (head) => this._synchronizer.push(() => this._setBlockOnMainChain(head, head.height, true)));
+        this.consensus.blockchain.on('head-changed', (head) => this._synchronizer.push(async () => {
+            await this._setBlockOnMainChain(head, head.height, true);
+            await this._distributePayinsForBlock(head);
+            this._removeOldDbEntries(head.height);
+        }));
         this.consensus.blockchain.on('block-reverted', (head) => this._synchronizer.push(() => this._setBlockOnMainChain(head, head.height, false)));
     }
 
@@ -53,13 +56,13 @@ class PoolService extends Nimiq.Observable {
     async _distributePayinsForBlock(block) {
         Nimiq.Log.d(PoolService, 'Miner addr ' + block.minerAddr.toUserFriendlyAddress() + ' our ' + this.poolAddress.toUserFriendlyAddress());
         if (block.minerAddr.equals(this.poolAddress)) {
-            const blockId = await Helper.getStoreBlockId(this.connectionPool, block.hash(), block.height);
-            const [difficultyByAddress, totalDifficulty] = await this._getLastNShares(block, this._config.pplnsShares);
+            const blockId = await Helper.getStoreBlockId(this.connectionPool, block.hash(), block.height, block.timestamp);
+            const [difficultyByUser, totalDifficulty] = await this._getLastNShares(block, this._config.pplnsBlocks);
             let payableBlockReward = Helper.getPayableBlockReward(this._config, block);
-            Nimiq.Log.i(PoolService, `Distributing payable value of ${Nimiq.Policy.satoshisToCoins(payableBlockReward)} NIM to ${difficultyByAddress.size} users`);
-            for (const [addr, difficulty] of difficultyByAddress) {
+            Nimiq.Log.i(PoolService, `Distributing payable value of ${Nimiq.Policy.satoshisToCoins(payableBlockReward)} NIM to ${difficultyByUser.size} users`);
+            for (const [userId, difficulty] of difficultyByUser) {
                 const userReward = Math.floor(difficulty * payableBlockReward / totalDifficulty);
-                await this._storePayin(addr, userReward, Date.now(), blockId);
+                await this._storePayin(userId, userReward, blockId);
             }
         }
     }
@@ -74,40 +77,43 @@ class PoolService extends Nimiq.Observable {
         const ret = new Map();
         const query = `
             SELECT user, SUM(difficulty) AS difficulty_sum
-            FROM
-            (
-                SELECT user, difficulty
-                FROM share
-                INNER JOIN block ON block.id = share.prev_block
-                WHERE block.main_chain = true AND block.height <= ?
-                ORDER BY block.height DESC
-                LIMIT ?
-            ) t1
+            FROM shares
+            INNER JOIN block ON block.id = shares.prev_block
+            WHERE block.main_chain = true AND block.height >= ? AND block.height <= ?
             GROUP BY user`;
-        const queryArgs = [lastBlock.height, n];
+        // Don't take shares onto the previous head into account because server instances haven't pushed all shares jet => -1
+        const queryArgs = [lastBlock.height - n, lastBlock.height - 1];
         const [rows, fields] = await this.connectionPool.execute(query, queryArgs);
 
         let totalDifficulty = 0;
         for (const row of rows) {
-            const address = await Helper.getUser(this.connectionPool, row.user);
-            ret.set(address, row.difficulty_sum);
+            ret.set(row.user, row.difficulty_sum);
             totalDifficulty += row.difficulty_sum;
         }
         return [ret, totalDifficulty];
     }
 
+    async _removeOldDbEntries(currHeight) {
+        if (this._config.databaseRetentionBlocks == -1) return;
+        let query = `
+            DELETE shares
+            FROM shares
+            LEFT JOIN block on shares.prev_block=block.id
+            WHERE block.height < ?
+        `;
+        let queryArgs = [currHeight - Math.max(this._config.payoutConfirmations, this._config.pplnsBlocks, this._config.databaseRetentionBlocks)];
+        await this.connectionPool.execute(query, queryArgs);
+    }
+
     /**
-     * @param {Nimiq.Address} userAddress
+     * @param {Nimiq.Address} userId
      * @param {number} amount
-     * @param {number} datetime
      * @param {number} blockId
      * @private
      */
-    async _storePayin(userAddress, amount, datetime, blockId) {
-        const userId = await Helper.getUserId(this.connectionPool, userAddress);
-
-        const query = "INSERT INTO payin (user, amount, datetime, block) VALUES (?, ?, ?, ?)";
-        const queryArgs = [userId, amount, datetime, blockId];
+    async _storePayin(userId, amount, blockId) {
+        const query = "INSERT INTO payin (user, amount, block) VALUES (?, ?, ?)";
+        const queryArgs = [userId, amount, blockId];
         await this.connectionPool.execute(query, queryArgs);
     }
 
@@ -119,9 +125,9 @@ class PoolService extends Nimiq.Observable {
      */
     async _setBlockOnMainChain(block, height, onMainChain) {
         const query = `
-            INSERT INTO block (hash, height, main_chain) VALUES (?, ?, ?)
+            INSERT INTO block (hash, height, datetime, main_chain) VALUES (?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE main_chain=?`;
-        const queryArgs = [ block.hash().serialize(), block.height, onMainChain, onMainChain ];
+        const queryArgs = [ block.hash().serialize(), block.height, block.timestamp, onMainChain, onMainChain ];
         await this.connectionPool.execute(query, queryArgs);
     }
 

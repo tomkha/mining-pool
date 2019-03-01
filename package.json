@@ -1,6 +1,6 @@
 {
   "name": "nimiq-pool",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "homepage": "https://nimiq.com/",
   "description": "",
   "private": true,
@@ -23,13 +23,14 @@
     "jasmine": "^3.1.0"
   },
   "dependencies": {
-    "@nimiq/core": "^1.1.0",
+    "@nimiq/core": "^1.4.1",
+    "@nimiq/jungle-db": "^0.9.14",
+    "bignumber": "^1.1.0",
     "btoa": "^1.2.1",
     "jasmine-spec-reporter": "^4.2.1",
     "json5": "^1.0.1",
     "lodash.merge": "^4.6.1",
     "minimist": "^1.2.0",
-    "mysql2": "^1.5.3",
-    "uws": "^9.147.0"
+    "mysql2": "^1.5.3"
   }
 }

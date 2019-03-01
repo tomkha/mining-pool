@@ -32,27 +32,59 @@ Nimiq.GenesisConfig.CONFIGS['tests'] = {
 };
 Nimiq.GenesisConfig.init(Nimiq.GenesisConfig.CONFIGS['tests']);
 
-beforeEach((done) => {
-    (async () => {
-        try {
-            let data = fs.readFileSync('./sql/drop.sql', 'utf8');
-            connection = await mysql.createConnection({
-                host: 'localhost',
-                user: 'root',
-                password: 'root',
-                multipleStatements: true
-            });
-            await connection.query(data);
-        } catch (e) {
-            Nimiq.Log.w('Spec', e);
-        }
-
-        data = fs.readFileSync('./sql/create.sql', 'utf8');
-        connection = await mysql.createConnection({ host: 'localhost', user: 'root', password: 'root', multipleStatements: true });
+async function dropDatabase() {
+    try {
+        const data = fs.readFileSync('./sql/drop.sql', 'utf8');
+        const connection = await mysql.createConnection({
+            host: 'localhost',
+            user: 'root',
+            password: 'root',
+            multipleStatements: true
+        });
         await connection.query(data);
+        await connection.close();
+    } catch (e) {
+        // Ignore, this is supposed to happen if prior tests did fail.
+    }
+}
 
-        done();
-    })().catch(done.fail);
+async function createDatabase() {
+    const connection = await mysql.createConnection({host: 'localhost', user: 'root', password: 'root'});
+    const data = fs.readFileSync('./sql/create.sql', 'utf8');
+    let start = 0;
+    let length = 0;
+    let delimiter = ';';
+    while (start < data.length) {
+        let nextDelimiter = data.indexOf(delimiter, start);
+        let nextDelimiterChange = data.indexOf('\nDELIMITER', start);
+        if (nextDelimiter < 0) nextDelimiter = data.length;
+        if (nextDelimiterChange < 0) nextDelimiterChange = Number.MAX_VALUE;
+
+        if (nextDelimiterChange < nextDelimiter) {
+            const delimiterChangeEnd = data.indexOf('\n', nextDelimiterChange + 11);
+            delimiter = data.substring(nextDelimiterChange + 11, delimiterChangeEnd);
+            start = delimiterChangeEnd + 1;
+        } else {
+            const query = data.substring(start, nextDelimiter);
+            if (query.trim() != '') {
+                await connection.query(query);
+            }
+            start = nextDelimiter + delimiter.length;
+        }
+    }
+    await connection.close();
+}
+
+beforeAll((done) => {
+    dropDatabase().then(done, done.fail);
+});
+
+beforeEach((done) => {
+    createDatabase().then(done, done.fail);
+});
+
+afterEach((done) => {
+    dropDatabase().then(done, done.fail);
 });
 
 jasmine.DEFAULT_TIMEOUT_INTERVAL = 12000;
