@@ -52,7 +52,7 @@ sudo mysql -u root < sql/create.sql
 
 Generate a self-signed certificate
 ```
-openssl req -x509 -nodes -keyout mypool.key -out mypool.cer -days 365 -subj '/CN=MyPool'
+openssl req -x509 -newkey rsa:4096 -nodes -keyout mypool.key -out mypool.cer -days 365 -subj '/CN=MyPool'
 ```
 
 Download and unpack the full consensus archive (be patient)
