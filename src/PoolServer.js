@@ -18,8 +18,9 @@ class PoolServer extends Nimiq.Observable {
      * @param {string} mySqlHost
      * @param {string} sslKeyPath
      * @param {string} sslCertPath
+     * @param {{enabled: boolean, port: number, address: string, addresses: Array.<string>, header: string, checkSource: boolean, acceptHeader: boolean}} reverseProxy
      */
-    constructor(consensus, config, port, mySqlPsw, mySqlHost, sslKeyPath, sslCertPath) {
+    constructor(consensus, config, port, mySqlPsw, mySqlHost, sslKeyPath, sslCertPath, reverseProxy) {
         super();
 
         /** @type {Nimiq.FullConsensus} */
@@ -49,17 +50,20 @@ class PoolServer extends Nimiq.Observable {
         /** @type {string} */
         this._sslCertPath = sslCertPath;
 
+        /** @type {{enabled: boolean, port: number, address: string, addresses: Array.<string>, header: string, checkSource: boolean, acceptHeader: boolean}} */
+        this._reverseProxy = reverseProxy;
+
         /** @type {Nimiq.Miner} */
         this._miner = new Nimiq.Miner(consensus.blockchain, consensus.blockchain.accounts, consensus.mempool, consensus.network.time, this.poolAddress);
 
         /** @type {Set.<PoolAgent>} */
         this._agents = new Set();
 
-        /** @type {Nimiq.HashMap.<number, Array.<Nimiq.Hash>>} */
+        /** @type {Nimiq.HashMap.<number, Array.<Hash>>} */
         this._shares = new Nimiq.HashMap();
 
-        /** @type {Array.<(userId: Nimiq.Address, device: number, prevBlockId: number)>} */
-        this._shareSummary = [];
+        /** @type {HashMap.<string, {userId: Address, deviceId: number, prevBlockId: number, difficulty: BigNumber, count: number}>} */
+        this._shareSummary = new Nimiq.HashMap();
 
         /** @type {Nimiq.HashMap.<Nimiq.NetAddress, number>} */
         this._connectionsInTimePerIPv4 = new Nimiq.HashMap();
@@ -103,7 +107,10 @@ class PoolServer extends Nimiq.Observable {
         /** @type {JungleDb.LRUMap} */
         this._blockHashToId = new JungleDb.LRUMap(10);
 
-        setInterval(() => { this._bannedIPv4IPs = new Nimiq.HashMap(); this._bannedIPv6IPs = new Nimiq.HashMap(); }, this.config.maxConnTimeUnit);
+        setInterval(() => {
+            this._connectionsInTimePerIPv4 = new Nimiq.HashMap();
+            this._connectionsInTimePerIPv6 = new Nimiq.HashMap();
+        }, this.config.maxConnTimeUnit);
 
         setInterval(() => this._checkUnbanIps(), PoolServer.UNBAN_IPS_INTERVAL);
 
@@ -168,7 +175,38 @@ class PoolServer extends Nimiq.Observable {
      */
     _onConnection(ws, req) {
         try {
-            const netAddress = Nimiq.NetAddress.fromIP(req.connection.remoteAddress);
+            let netAddress = Nimiq.NetAddress.fromIP(req.connection.remoteAddress);
+            if (this._reverseProxy.enabled || this._reverseProxy.checkSource) {
+                let addresses = this._reverseProxy.addresses;
+                if (!addresses) addresses = [this._reverseProxy.address];
+                let matches = false;
+                for (const address of addresses) {
+                    let [ip, mask] = address.split('/');
+                    if (mask) {
+                        matches = Nimiq.NetAddress.fromIP(ip).subnet(mask).equals(netAddress.subnet(mask))
+                    } else {
+                        matches = Nimiq.NetAddress.fromIP(ip).equals(netAddress);
+                    }
+                    if (matches) break;
+                }
+                if (!matches) {
+                    Nimiq.Log.e(PoolServer, `Received connection from ${netAddress.toString()} when all connections were expected from the reverse proxy: closing the connection`);
+                    ws.close();
+                    return;
+                }
+            }
+            if (this._reverseProxy.enabled || this._reverseProxy.acceptHeader) {
+                const reverseProxyHeader = this._reverseProxy.header;
+                if (req.headers[reverseProxyHeader]) {
+                    netAddress = Nimiq.NetAddress.fromIP(req.headers[reverseProxyHeader].split(/\s*,\s*/)[0]);
+                } else if (this._reverseProxy.enabled) {
+                    Nimiq.Log.i(PoolServer, `Expected header '${reverseProxyHeader}' to contain the real IP from the connecting client: closing the connection`);
+                    ws.close();
+                    return;
+                } else {
+                    Nimiq.Log.w(PoolServer, `Expected header '${reverseProxyHeader}' to contain the real IP from the connecting client`);
+                }
+            }
             if (this._isIpBanned(netAddress)) {
                 Nimiq.Log.i(PoolServer, `[${netAddress}] Banned IP tried to connect`);
                 ws.close();
@@ -189,8 +227,8 @@ class PoolServer extends Nimiq.Observable {
     }
 
     /**
-     * @param {Nimiq.BlockHeader} header
-     * @param {Nimiq.BigNumber} difficulty
+     * @param {BlockHeader} header
+     * @param {BigNumber} difficulty
      * @private
      */
     _onShare(header, difficulty) {
@@ -209,25 +247,26 @@ class PoolServer extends Nimiq.Observable {
      * @param {PoolAgent} agent
      */
     requestCurrentHead(agent) {
-        agent.updateBlock(this._currentLightHead, this._nextTransactions, this._nextPrunedAccounts, this._nextAccountsHash);
+        agent.updateBlock(this._currentLightHead, this._block);
     }
 
     /**
-     * @param {Nimiq.BlockHead} head
+     * @param {Block} head
      * @private
      */
     async _announceHeadToNano(head) {
         this._currentLightHead = head.toLight();
         await this._updateTransactions();
-        this._announceNewNextToNano();
     }
 
     async _updateTransactions() {
         try {
-            const block = await this._miner.getNextBlock();
-            this._nextTransactions = block.body.transactions;
-            this._nextPrunedAccounts = block.body.prunedAccounts;
-            this._nextAccountsHash = block.header._accountsHash;
+            this._block = await this._miner.getNextBlock();
+            this._nextTransactions = this._block.body.transactions;
+            this._nextPrunedAccounts = this._block.body.prunedAccounts;
+            this._nextAccountsHash = this._block.header._accountsHash;
+            this._nextBlockHeader = this._block.header;
+            this._announceNewNextToNano();
         } catch(e) {
             setTimeout(() => this._updateTransactions(), 100);
         }
@@ -235,14 +274,14 @@ class PoolServer extends Nimiq.Observable {
 
     _announceNewNextToNano() {
         for (const poolAgent of this._agents.values()) {
-            if (poolAgent.mode === PoolAgent.Mode.NANO) {
-                poolAgent.updateBlock(this._currentLightHead, this._nextTransactions, this._nextPrunedAccounts, this._nextAccountsHash);
+            if (poolAgent.mode === PoolAgent.Mode.NANO || poolAgent.mode === PoolAgent.Mode.DUMB) {
+                poolAgent.updateBlock(this._currentLightHead, this._block);
             }
         }
     }
 
     /**
-     * @param {Nimiq.NetAddress} netAddress
+     * @param {NetAddress} netAddress
      */
     banIp(netAddress) {
         if (!netAddress.isPrivate()) {
@@ -257,11 +296,12 @@ class PoolServer extends Nimiq.Observable {
     }
 
     /**
-     * @param {Nimiq.NetAddress} netAddress
+     * @param {NetAddress} netAddress
      * @returns {boolean}
      * @private
      */
     _isIpBanned(netAddress) {
+        if (this._config.banned.includes(netAddress.toString())) return true;
         if (netAddress.isPrivate()) return false;
         if (netAddress.isIPv4()) {
             return this._bannedIPv4IPs.contains(netAddress);
@@ -287,7 +327,7 @@ class PoolServer extends Nimiq.Observable {
     }
 
     /**
-     * @param {Nimiq.NetAddress} netAddress
+     * @param {NetAddress} netAddress
      * @returns {boolean}
      * @private
      */
@@ -339,25 +379,20 @@ class PoolServer extends Nimiq.Observable {
     /**
      * @param {number} userId
      * @param {number} deviceId
-     * @param {Nimiq.BlockHeader} header
-     * @param {Nimiq.BigNumber} difficulty
+     * @param {BlockHeader} header
+     * @param {BigNumber} difficulty
      */
     async storeShare(userId, deviceId, header, difficulty) {
-        this._shareSummary.push({
-            userId: userId,
-            device: deviceId,
-            prevBlockId: await this._getStoreBlockId(header.prevHash, header.height - 1, header.timestamp),
-            difficulty: difficulty
-        });
-
-        let submittedShares = new Nimiq.HashMap();
+        let submittedShares;
         if (!this._shares.contains(userId)) {
+            submittedShares = new Nimiq.HashMap();
             this._shares.put(userId, submittedShares);
         } else {
             submittedShares = this._shares.get(userId);
         }
-        let sharesForPrevious = [];
+        let sharesForPrevious;
         if (!submittedShares.contains(header.prevHash.toString())) {
+            sharesForPrevious = [];
             submittedShares.put(header.prevHash.toString(), sharesForPrevious);
         } else {
             sharesForPrevious = submittedShares.get(header.prevHash);
@@ -367,6 +402,22 @@ class PoolServer extends Nimiq.Observable {
         } else {
             throw new Error("Share inserted twice");
         }
+
+        const prevBlockId = await this._getStoreBlockId(header.prevHash, header.height - 1, header.timestamp);
+        const key = `${userId}:${deviceId}:${prevBlockId}`;
+        let summary;
+        if (!this._shareSummary.contains(key)) {
+            summary = {
+                userId, deviceId, prevBlockId,
+                difficulty: new Nimiq.BigNumber(0),
+                count: 0
+            };
+            this._shareSummary.put(key, summary)
+        } else {
+            summary = this._shareSummary.get(key);
+        }
+        summary.difficulty = summary.difficulty.plus(difficulty);
+        summary.count += 1;
     }
 
     /**
@@ -389,15 +440,15 @@ class PoolServer extends Nimiq.Observable {
     async _flushSharesToDb() {
         if (this._shareSummary.length === 0) return;
         let sharesBackup = this._shareSummary;
-        this._shareSummary = [];
+        this._shareSummary = new Nimiq.HashMap();
 
         let query = `
             INSERT INTO shares (user, device, prev_block, count, difficulty)
             VALUES ` + Array(sharesBackup.length).fill('(?,?,?,?,?)').join(', ') + ` ` +
-            `ON DUPLICATE KEY UPDATE count=count+1, difficulty=difficulty+values(difficulty)`;
+            `ON DUPLICATE KEY UPDATE count=count+values(count), difficulty=difficulty+values(difficulty)`;
         let queryArgs = [];
-        for (const summary of sharesBackup) {
-            queryArgs.push(summary.userId, summary.device, summary.prevBlockId, 1, +summary.difficulty);
+        for (const summary of sharesBackup.valueIterator()) {
+            queryArgs.push(summary.userId, summary.deviceId, summary.prevBlockId, summary.count, +summary.difficulty);
         }
         await this.connectionPool.execute(query, queryArgs);
     }
@@ -451,7 +502,7 @@ class PoolServer extends Nimiq.Observable {
     }
 
     /**
-     * @param {Nimiq.Hash} blockHash
+     * @param {Hash} blockHash
      * @param {number} height
      * @param {number} timestamp
      * @returns {Promise.<number>}
@@ -482,6 +533,8 @@ class PoolServer extends Nimiq.Observable {
      * @param {PoolAgent} agent
      */
     removeAgent(agent) {
+        if (agent.mode === PoolAgent.Mode.REMOVED) return;
+        agent.mode = PoolAgent.Mode.REMOVED;
         if (!agent.netAddress.isPrivate()) {
             // Remove one connection from total count per IP
             if (agent.netAddress.isIPv4()) {
@@ -506,21 +559,11 @@ class PoolServer extends Nimiq.Observable {
      * @type {{ unregistered: number, smart: number, nano: number}}
      */
     getClientModeCounts() {
-        let unregistered = 0, smart = 0, nano = 0;
+        let ret = { unregistered: 0, smart: 0, nano: 0, dumb: 0 };
         for (const agent of this._agents) {
-            switch (agent.mode) {
-                case PoolAgent.Mode.SMART:
-                    smart++;
-                    break;
-                case PoolAgent.Mode.NANO:
-                    nano++;
-                    break;
-                case PoolAgent.Mode.UNREGISTERED:
-                    unregistered++;
-                    break;
-            }
+            ret[agent.mode]++;
         }
-        return { unregistered: unregistered, smart: smart, nano: nano };
+        return ret;
     }
 
     /**
