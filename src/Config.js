@@ -15,11 +15,7 @@ const TAG = 'Config';
  * @property {string} type
  * @property {string} network
  * @property {PoolConfig} pool
- * @property {{enabled: boolean, port: number, sslCertPath: string, sslKeyPath: string, mySqlPsw: string, mySqlHost: string}} poolServer
- * @property {{enabled: boolean, mySqlPsw: string, mySqlHost: string}} poolService
- * @property {{enabled: boolean, mySqlPsw: string, mySqlHost: string}} poolPayout
- * @property {{enabled: boolean, port: number, password: string}} poolMetricsServer
- * @property {{seed: string, address: string}} wallet
+ * @property {{port: number, sslCertPath: string, sslKeyPath: string}} poolServer
  * @property {{enabled: boolean, port: number, address: string, addresses: Array.<string>, header: string, checkSource: boolean, acceptHeader: boolean}} reverseProxy
  * @property {{level: string, tags: object}} log
  * @property {Array.<{host: string, port: number, publicKey: string}>} seedPeers
@@ -39,50 +35,21 @@ const DEFAULT_CONFIG = /** @type {Config} */ {
     pool: {
         name: null,
         address: null,
-        payoutConfirmations: 10,
-        autoPayOutLimit: 5000000, // 50 NIM
-        poolFee: 0.01, // 1%
-        networkFee: 1, // satoshi per byte
         startDifficulty: 1,
         minDifficulty: 1,
         spsTimeUnit: 60000, // 1 minute
         desiredSps: 0.2, // desired shares per second
-        pplnsBlocks: 10,
-        flushSharesInterval: 1000 * 10, // 10 seconds
         connectionTimeout: 60 * 1000 * 10, // 10 minutes
         maxConnPerIP: 100,
         maxConnInTimePerIP: 50,
         maxConnTimeUnit: 1000 * 60 * 5,
-        databaseRetentionBlocks: 0,
         allowedErrors: 30,
         banned: []
     },
     poolServer: {
-        enabled: false,
         port: 8444,
         sslCertPath: null,
-        sslKeyPath: null,
-        mySqlPsw: null,
-        mySqlHost: null
-    },
-    poolService: {
-        enabled: false,
-        mySqlPsw: null,
-        mySqlHost: null
-    },
-    poolPayout: {
-        enabled: false,
-        mySqlPsw: null,
-        mySqlHost: null
-    },
-    poolMetricsServer: {
-        enabled: false,
-        port: 8650,
-        password: null
-    },
-    wallet: {
-        seed: null,
-        address: null
+        sslKeyPath: null
     },
     reverseProxy: {
         enabled: false,
@@ -135,38 +102,9 @@ const CONFIG_TYPES = {
     },
     poolServer: {
         type: 'object', sub: {
-            enabled: 'boolean',
             port: 'number',
             certPath: 'string',
-            keyPath: 'string',
-            mySqlPsw: 'string',
-            mySqlHost: 'string'
-        }
-    },
-    poolService: {
-        type: 'object', sub: {
-            enabled: 'boolean',
-            mySqlPsw: 'string',
-            mySqlHost: 'string'
-        }
-    },
-    poolPayout: {
-        type: 'object', sub: {
-            enabled: 'boolean',
-            mySqlPsw: 'string',
-            mySqlHost: 'string'
-        }
-    },
-    poolMetricsServer: {
-        type: 'object', sub: {
-            enabled: 'boolean',
-            port: 'number',
-            password: 'string'
-        }
-    },
-    wallet: {
-        type: 'object', sub: {
-            seed: 'string',
+            keyPath: 'string'
         }
     },
     log: {

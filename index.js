@@ -3,9 +3,6 @@ const argv = require('minimist')(process.argv.slice(2));
 const config = require('./src/Config.js')(argv.config);
 
 const PoolServer = require('./src/PoolServer.js');
-const PoolService = require('./src/PoolService.js');
-const PoolPayout = require('./src/PoolPayout.js');
-const MetricsServer = require('./src/MetricsServer.js');
 
 const START = Date.now();
 const TAG = 'Node';
@@ -15,12 +12,8 @@ if (!config) {
     Nimiq.Log.e(TAG, 'Specify a valid config file with --config=FILE');
     process.exit(1);
 }
-if (config.poolServer.enabled && config.type !== 'full') {
+if (config.type !== 'full') {
     Nimiq.Log.e(TAG, 'Pool server must run as a \'full\' node');
-    process.exit(1);
-}
-if (config.poolPayout.enabled && (config.poolServer.enabled || config.poolService.enabled)) {
-    Nimiq.Log.e(TAG, 'Pool payout needs to run separately from pool server');
     process.exit(1);
 }
 // Deprecated dumb config flag.
@@ -92,17 +85,11 @@ for (const key in config.constantOverrides) {
 
     // TODO: Wallet key.
     $.walletStore = await new Nimiq.WalletStore();
-    if (!config.pool.address && !config.wallet.address && !config.wallet.seed) {
+    if (!config.pool.address) {
         // Load or create default wallet.
         $.wallet = await $.walletStore.getDefault();
-    } else if (config.wallet.seed) {
-        // Load wallet from seed.
-        const mainWallet = Nimiq.Wallet.loadPlain(config.wallet.seed);
-        await $.walletStore.put(mainWallet);
-        await $.walletStore.setDefault(mainWallet.address);
-        $.wallet = mainWallet;
     } else {
-        const address = Nimiq.Address.fromUserFriendlyAddress(config.pool.address || config.wallet.address);
+        const address = Nimiq.Address.fromUserFriendlyAddress(config.pool.address);
         $.wallet = {address: address};
         // Check if we have a full wallet in store.
         const wallet = await $.walletStore.get(address);
@@ -112,35 +99,16 @@ for (const key in config.constantOverrides) {
         }
     }
 
-    if (config.poolServer.enabled) {
-        const poolServer = new PoolServer($.consensus, config.pool, config.poolServer.port, config.poolServer.mySqlPsw, config.poolServer.mySqlHost, config.poolServer.sslKeyPath, config.poolServer.sslCertPath, config.reverseProxy);
+    const poolServer = new PoolServer($.consensus, config.pool, config.poolServer.port, config.poolServer.sslKeyPath, config.poolServer.sslCertPath, config.reverseProxy);
 
-        if (config.poolMetricsServer.enabled) {
-            $.metricsServer = new MetricsServer(config.poolServer.sslKeyPath, config.poolServer.sslCertPath, config.poolMetricsServer.port, config.poolMetricsServer.password);
-            $.metricsServer.init(poolServer);
-        }
-
-        process.on('SIGTERM', () => {
-            poolServer.stop();
-            process.exit(0);
-        });
-        process.on('SIGINT', () => {
-            poolServer.stop();
-            process.exit(0);
-        });
-    }
-    if (config.poolService.enabled) {
-        const poolService = new PoolService($.consensus, config.pool, config.poolService.mySqlPsw, config.poolService.mySqlHost);
-        poolService.start();
-    }
-    if (config.poolPayout.enabled) {
-        if (!$.wallet.publicKey) {
-            Nimiq.Log.i(TAG, 'Wallet for pool address not found, terminating.');
-            process.exit(0);
-        }
-        const poolPayout = new PoolPayout($.consensus, $.wallet, config.pool, config.poolPayout.mySqlPsw, config.poolPayout.mySqlHost);
-        poolPayout.start();
-    }
+    process.on('SIGTERM', () => {
+        poolServer.stop();
+        process.exit(0);
+    });
+    process.on('SIGINT', () => {
+        poolServer.stop();
+        process.exit(0);
+    });
 
     const addresses = await $.walletStore.list();
     Nimiq.Log.i(TAG, `Managing wallets [${addresses.map(address => address.toUserFriendlyAddress())}]`);

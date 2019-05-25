@@ -98,15 +98,6 @@ class PoolAgent extends Nimiq.Observable {
         this._errorsSinceReset = 0;
     }
 
-    async sendBalance() {
-        this._send({
-            message: PoolAgent.MESSAGE_BALANCE,
-            balance: Math.floor(await this._pool.getUserBalance(this._userId, true)),
-            confirmedBalance: Math.floor(await this._pool.getUserBalance(this._userId)),
-            payoutRequestActive: await this._pool.hasPayoutRequest(this._userId)
-        });
-    }
-
     /**
      * @param {string} data
      * @private
@@ -152,10 +143,6 @@ class PoolAgent extends Nimiq.Observable {
                 this._timers.resetTimeout('connection-timeout', () => this._onError(), this._pool.config.connectionTimeout);
                 break;
             }
-            case PoolAgent.MESSAGE_PAYOUT: {
-                await this._onPayoutMessage(msg);
-                break;
-            }
         }
     }
 
@@ -197,7 +184,6 @@ class PoolAgent extends Nimiq.Observable {
         this._sharesSinceReset = 0;
         this._lastSpsReset = Date.now();
         this._timers.resetTimeout('recalc-difficulty', () => this._recalcDifficulty(), this._pool.config.spsTimeUnit);
-        this._userId = await this._pool.getStoreUserId(this._address);
         this._regenerateNonce();
         this._regenerateSettings();
 
@@ -210,8 +196,6 @@ class PoolAgent extends Nimiq.Observable {
         if (this.mode === PoolAgent.Mode.NANO || this.mode === PoolAgent.Mode.DUMB) {
             this._pool.requestCurrentHead(this);
         }
-        await this.sendBalance();
-        this._timers.resetInterval('send-balance', () => this.sendBalance(), 1000 * 60 * 5);
         this._timers.resetInterval('send-keep-alive-ping', () => { try { this._ws.ping() } catch (e) { this.shutdown() } }, 1000 * 10);
 
         Nimiq.Log.i(PoolAgent, `REGISTER ${this._address.toUserFriendlyAddress()} / ${this._deviceId} (${this.mode})`);
@@ -242,7 +226,7 @@ class PoolAgent extends Nimiq.Observable {
         }
 
         try {
-            await this._pool.storeShare(this._userId, this._deviceId, block.header, this._difficulty);
+            this._pool.storeShare(this._address, block.header);
         } catch (e) {
             this._sendError('submitted share twice');
             throw new Error('Client submitted share twice ' + e.message || e);
@@ -334,7 +318,7 @@ class PoolAgent extends Nimiq.Observable {
         }
 
         try {
-            await this._pool.storeShare(this._userId, this._deviceId, header, difficulty);
+            this._pool.storeShare(this._address, header);
         } catch (e) {
             this._sendError('submitted share twice');
             throw new Error('Client submitted share twice ' + e.message || e);
@@ -406,7 +390,7 @@ class PoolAgent extends Nimiq.Observable {
         }
 
         try {
-            await this._pool.storeShare(this._userId, this._deviceId, header, this._difficulty);
+            this._pool.storeShare(this._address, header);
         } catch (e) {
             this._sendError('submitted share twice');
             throw new Error('Client submitted share twice ' + e.message || e);
@@ -437,35 +421,6 @@ class PoolAgent extends Nimiq.Observable {
             return 'invalid pow';
         }
         return null;
-    }
-
-    /**
-     * @param {Object} msg
-     * @private
-     */
-    async _onPayoutMessage(msg) {
-        const proofValid = await this._verifyProof(Nimiq.BufferUtils.fromBase64(msg.proof), PoolAgent.PAYOUT_NONCE_PREFIX);
-        if (proofValid) {
-            await this._pool.storePayoutRequest(this._userId);
-            this._regenerateNonce();
-            this._sendSettings();
-        } else {
-            throw new Error('Client provided invalid proof for payout request');
-        }
-    }
-
-    /**
-     * @param {Nimiq.SerialBuffer} msgProof
-     * @param {string} prefix
-     * @returns {Promise.<boolean>}
-     * @private
-     */
-    async _verifyProof(msgProof, prefix) {
-        const proof = Nimiq.SignatureProof.unserialize(msgProof);
-        const buf = new Nimiq.SerialBuffer(8 + prefix.length);
-        buf.writeString(prefix, prefix.length);
-        buf.writeUint64(this._nonce);
-        return await proof.verify(this._address, buf);
     }
 
     /**
@@ -568,10 +523,8 @@ class PoolAgent extends Nimiq.Observable {
 
 PoolAgent.MESSAGE_REGISTER = 'register';
 PoolAgent.MESSAGE_REGISTERED = 'registered';
-PoolAgent.MESSAGE_PAYOUT = 'payout';
 PoolAgent.MESSAGE_SHARE = 'share';
 PoolAgent.MESSAGE_SETTINGS = 'settings';
-PoolAgent.MESSAGE_BALANCE = 'balance';
 PoolAgent.MESSAGE_NEW_BLOCK = 'new-block';
 PoolAgent.MESSAGE_ERROR = 'error';
 
@@ -583,7 +536,5 @@ PoolAgent.Mode = {
     DUMB: 'dumb',
     REMOVED: 'removed'
 };
-
-PoolAgent.PAYOUT_NONCE_PREFIX = 'POOL_PAYOUT';
 
 module.exports = exports = PoolAgent;

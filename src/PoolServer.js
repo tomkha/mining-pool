@@ -1,26 +1,21 @@
 const https = require('https');
 const WebSocket = require('ws');
-const mysql = require('mysql2/promise');
 const fs = require('fs');
 
 const Nimiq = require('@nimiq/core');
-const JungleDb = require('@nimiq/jungle-db');
 
 const PoolAgent = require('./PoolAgent.js');
-const Helper = require('./Helper.js');
 
 class PoolServer extends Nimiq.Observable {
     /**
      * @param {Nimiq.FullConsensus} consensus
      * @param {PoolConfig} config
      * @param {number} port
-     * @param {string} mySqlPsw
-     * @param {string} mySqlHost
      * @param {string} sslKeyPath
      * @param {string} sslCertPath
      * @param {{enabled: boolean, port: number, address: string, addresses: Array.<string>, header: string, checkSource: boolean, acceptHeader: boolean}} reverseProxy
      */
-    constructor(consensus, config, port, mySqlPsw, mySqlHost, sslKeyPath, sslCertPath, reverseProxy) {
+    constructor(consensus, config, port, sslKeyPath, sslCertPath, reverseProxy) {
         super();
 
         /** @type {Nimiq.FullConsensus} */
@@ -39,12 +34,6 @@ class PoolServer extends Nimiq.Observable {
         this.port = port;
 
         /** @type {string} */
-        this._mySqlPsw = mySqlPsw;
-
-        /** @type {string} */
-        this._mySqlHost = mySqlHost;
-
-        /** @type {string} */
         this._sslKeyPath = sslKeyPath;
 
         /** @type {string} */
@@ -59,11 +48,8 @@ class PoolServer extends Nimiq.Observable {
         /** @type {Set.<PoolAgent>} */
         this._agents = new Set();
 
-        /** @type {Nimiq.HashMap.<number, Array.<Hash>>} */
+        /** @type {Nimiq.HashMap.<string, Nimiq.HashMap.<string, Array.<Hash>>>} */
         this._shares = new Nimiq.HashMap();
-
-        /** @type {HashMap.<string, {userId: Address, deviceId: number, prevBlockId: number, difficulty: BigNumber, count: number}>} */
-        this._shareSummary = new Nimiq.HashMap();
 
         /** @type {Nimiq.HashMap.<Nimiq.NetAddress, number>} */
         this._connectionsInTimePerIPv4 = new Nimiq.HashMap();
@@ -101,12 +87,6 @@ class PoolServer extends Nimiq.Observable {
         /** @type {boolean} */
         this._started = false;
 
-        /** @type {JungleDb.LRUMap} */
-        this._userAddressToId = new JungleDb.LRUMap(200);
-
-        /** @type {JungleDb.LRUMap} */
-        this._blockHashToId = new JungleDb.LRUMap(10);
-
         setInterval(() => {
             this._connectionsInTimePerIPv4 = new Nimiq.HashMap();
             this._connectionsInTimePerIPv6 = new Nimiq.HashMap();
@@ -115,8 +95,6 @@ class PoolServer extends Nimiq.Observable {
         setInterval(() => this._checkUnbanIps(), PoolServer.UNBAN_IPS_INTERVAL);
 
         setInterval(() => this._calculateHashrate(), PoolServer.HASHRATE_INTERVAL);
-
-        setInterval(() => this._flushSharesToDb(), this._config.flushSharesInterval);
 
         this.consensus.on('established', () => this.start());
     }
@@ -128,19 +106,11 @@ class PoolServer extends Nimiq.Observable {
         this._currentLightHead = this.consensus.blockchain.head.toLight();
         await this._updateTransactions();
 
-        this.connectionPool = await mysql.createPool({
-            host: this._mySqlHost,
-            user: 'pool_server',
-            password: this._mySqlPsw,
-            database: 'pool'
-        });
-
         this._wss = PoolServer.createServer(this.port, this._sslKeyPath, this._sslCertPath);
         this._wss.on('connection', (ws, req) => this._onConnection(ws, req));
 
         this.consensus.blockchain.on('head-changed', (head) => {
             this._announceHeadToNano(head);
-            this._flushSharesToDb();
             this._removeOldShares(head.header.prevHash);
         });
     }
@@ -152,7 +122,7 @@ class PoolServer extends Nimiq.Observable {
         };
         const httpsServer = https.createServer(sslOptions, (req, res) => {
             res.writeHead(200);
-            res.end('Nimiq Pool Server\n');
+            res.end('Nimiq Micro Pool Server\n');
         }).listen(port);
 
         // We have to access socket.remoteAddress here because otherwise req.connection.remoteAddress won't be set in the WebSocket's 'connection' event (yay)
@@ -341,7 +311,6 @@ class PoolServer extends Nimiq.Observable {
                 }
                 this._connectionsPerIPv4.put(netAddress, currTotalCount + 1);
                 this._connectionsInTimePerIPv4.put(netAddress, currRateCount + 1);
-                console.log('rates', currTotalCount + 1, currRateCount + 1);
             } else if (netAddress.isIPv6()) {
                 const prefix = netAddress.ip.subarray(0, 8);
                 const currTotalCount = this._connectionsPerIPv6.get(prefix) || 0;
@@ -351,7 +320,6 @@ class PoolServer extends Nimiq.Observable {
                 }
                 this._connectionsPerIPv6.put(prefix, currTotalCount + 1);
                 this._connectionsInTimePerIPv6.put(prefix, currRateCount + 1);
-                console.log('rates', currTotalCount + 1, currRateCount + 1);
             }
         }
         return false;
@@ -377,18 +345,17 @@ class PoolServer extends Nimiq.Observable {
     }
 
     /**
-     * @param {number} userId
-     * @param {number} deviceId
+     * @param {Address} address
      * @param {BlockHeader} header
-     * @param {BigNumber} difficulty
      */
-    async storeShare(userId, deviceId, header, difficulty) {
+    storeShare(address, header) {
         let submittedShares;
-        if (!this._shares.contains(userId)) {
+        const addressKey = address.toBase64();
+        if (!this._shares.contains(addressKey)) {
             submittedShares = new Nimiq.HashMap();
-            this._shares.put(userId, submittedShares);
+            this._shares.put(addressKey, submittedShares);
         } else {
-            submittedShares = this._shares.get(userId);
+            submittedShares = this._shares.get(addressKey);
         }
         let sharesForPrevious;
         if (!submittedShares.contains(header.prevHash.toString())) {
@@ -402,55 +369,6 @@ class PoolServer extends Nimiq.Observable {
         } else {
             throw new Error("Share inserted twice");
         }
-
-        const prevBlockId = await this._getStoreBlockId(header.prevHash, header.height - 1, header.timestamp);
-        const key = `${userId}:${deviceId}:${prevBlockId}`;
-        let summary;
-        if (!this._shareSummary.contains(key)) {
-            summary = {
-                userId, deviceId, prevBlockId,
-                difficulty: new Nimiq.BigNumber(0),
-                count: 0
-            };
-            this._shareSummary.put(key, summary)
-        } else {
-            summary = this._shareSummary.get(key);
-        }
-        summary.difficulty = summary.difficulty.plus(difficulty);
-        summary.count += 1;
-    }
-
-    /**
-     * @param {number} user
-     * @param {Nimiq.Hash} shareHash
-     * @returns {boolean}
-     */
-    async containsShare(user, shareHash) {
-        if (this._shares.contains(user)) {
-            const userHashesMap = this._shares.get(user);
-            for (const key of userHashesMap.keys()) {
-                if (userHashesMap.get(key).includes(shareHash.toString())) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    async _flushSharesToDb() {
-        if (this._shareSummary.length === 0) return;
-        let sharesBackup = this._shareSummary;
-        this._shareSummary = new Nimiq.HashMap();
-
-        let query = `
-            INSERT INTO shares (user, device, prev_block, count, difficulty)
-            VALUES ` + Array(sharesBackup.length).fill('(?,?,?,?,?)').join(', ') + ` ` +
-            `ON DUPLICATE KEY UPDATE count=count+values(count), difficulty=difficulty+values(difficulty)`;
-        let queryArgs = [];
-        for (const summary of sharesBackup.valueIterator()) {
-            queryArgs.push(summary.userId, summary.deviceId, summary.prevBlockId, summary.count, +summary.difficulty);
-        }
-        await this.connectionPool.execute(query, queryArgs);
     }
 
     /**
@@ -458,75 +376,19 @@ class PoolServer extends Nimiq.Observable {
      * @private
      */
     async _removeOldShares(oldShareHash) {
-        for (let userId of this._shares.keys()) {
-            let userHashesMap = this._shares.get(userId);
-            for (let key of userHashesMap.keys()) {
+        for (let addressKey of this._shares.keys()) {
+            let addressHashesMap = this._shares.get(addressKey);
+            for (let key of addressHashesMap.keys()) {
                 if (key === oldShareHash.toString()) {
-                    userHashesMap.remove(key);
+                    addressHashesMap.remove(key);
                 } else {
                     const block = await this.consensus.blockchain.getBlock(Nimiq.Hash.fromBase64(key));
                     if (block && block.header.timestamp * 1000 > this.consensus.network.time + Nimiq.Block.TIMESTAMP_DRIFT_MAX * 1000) {
-                        userHashesMap.remove(key);
+                        addressHashesMap.remove(key);
                     }
                 }
             }
         }
-    }
-
-    /**
-     * @param {number} userId
-     * @param {boolean} includeVirtual
-     * @returns {Promise<number>}
-     */
-    async getUserBalance(userId, includeVirtual = false) {
-        return await Helper.getUserBalance(this._config, this.connectionPool, userId, this.consensus.blockchain.height, includeVirtual);
-    }
-
-    /**
-     * @param {number} userId
-     */
-    async storePayoutRequest(userId) {
-        const query = "INSERT IGNORE INTO payout_request (user) VALUES (?)";
-        const queryArgs = [userId];
-        await this.connectionPool.execute(query, queryArgs);
-    }
-
-    /**
-     * @param {number} userId
-     * @returns {Promise.<boolean>}
-     */
-    async hasPayoutRequest(userId) {
-        const query = `SELECT * FROM payout_request WHERE user=?`;
-        const [rows, fields] = await this.connectionPool.execute(query, [userId]);
-        return rows.length > 0;
-    }
-
-    /**
-     * @param {Hash} blockHash
-     * @param {number} height
-     * @param {number} timestamp
-     * @returns {Promise.<number>}
-     */
-    async _getStoreBlockId(blockHash, height, timestamp) {
-        let id = this._blockHashToId.get(blockHash);
-        if (!id) {
-            id = await Helper.getStoreBlockId(this.connectionPool, blockHash, height, timestamp);
-            this._blockHashToId.set(blockHash, id);
-        }
-        return Promise.resolve(id);
-    }
-
-    /**
-     * @param {Nimiq.Address} addr
-     * @returns {Promise.<number>}
-     */
-    async getStoreUserId(addr) {
-        let userId = this._userAddressToId.get(addr);
-        if (!userId) {
-            userId = await Helper.getStoreUserId(this.connectionPool, addr);
-            this._userAddressToId.set(addr, userId);
-        }
-        return userId;
     }
 
     /**
