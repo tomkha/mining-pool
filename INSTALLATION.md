@@ -58,9 +58,9 @@ openssl req -x509 -newkey rsa:4096 -nodes -keyout mypool.key -out mypool.cer -da
 Download and unpack the full consensus archive (be patient)
 ```
 mkdir main-full-consensus && cd main-full-consensus
-wget https://download.sushipool.com/main-full-consensus.tar.bz2
-tar -xvf main-full-consensus.tar.bz2
-rm main-full-consensus.tar.bz2
+wget https://aschen.ovh/nimiq/main/main-full-consensus.tar
+tar -xvf main-full-consensus.tar
+rm main-full-consensus.tar
 cd ..
 ```
 
