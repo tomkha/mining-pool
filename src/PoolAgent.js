@@ -171,7 +171,7 @@ class PoolAgent extends Nimiq.Observable {
 
         this._address = Nimiq.Address.fromUserFriendlyAddress(msg.address);
         
-        this._difficulty = msg.startDifficulty || (msg.deviceData || {}).startDifficulty || this._difficulty;
+        this._difficulty = new Nimiq.BigNumber(msg.startDifficulty || (msg.deviceData || {}).startDifficulty || this._pool.config.startDifficulty);
 
         if (this._pool.config.banned.includes(this._address.toBase64())) {
             this._sendError('Banned');
