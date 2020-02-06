@@ -2,24 +2,23 @@
 # yarn lockfile v1
 
 
-"@nimiq/core@^1.4.3":
-  version "1.5.0"
-  resolved "https://registry.yarnpkg.com/@nimiq/core/-/core-1.5.0.tgz#5a5bd0c788a9f9484466dafa884cfc3676340c8e"
-  integrity sha512-1ZE/k1gyj2p2mXe1q3r46i6akCkjOPKxFbzgt3AiYVs12Uzu+iwMMzDJN9iF5K8jZhKJU/028rkY7VS4z1eSFg==
+"@nimiq/core@^1.5.4":
+  version "1.5.4"
+  resolved "https://registry.yarnpkg.com/@nimiq/core/-/core-1.5.4.tgz#18513ed06c9cfce270f681b880cb0ca36024442a"
+  integrity sha512-uiBNxYiAdwiKc0Qoyqf1LodsSIDQIVmzOf1yAqppCSlJfJc4iSQ1Ee+NQHwyejRjWrB1+UwN9awqWndvtXS2pg==
   dependencies:
-    "@nimiq/jungle-db" "^0.9.17"
+    "@nimiq/jungle-db" "^0.9.20"
     atob "^2.0.3"
     bindings "^1.3.0"
     btoa "^1.1.2"
     chalk "^2.3.2"
-    cpuid-git "^0.3.0"
-    json5 "^1.0.1"
+    cpuid-git "^0.3.1"
+    json5 "^2.1.0"
     lodash.merge "^4.6.2"
-    minimist "^1.2.0"
-    nan "^2.10.0"
-    ws "^5.2.0"
+    nan "^2.14.0"
+    ws "^7.0.1"
 
-"@nimiq/jungle-db@^0.9.14", "@nimiq/jungle-db@^0.9.17":
+"@nimiq/jungle-db@^0.9.20":
   version "0.9.20"
   resolved "https://registry.yarnpkg.com/@nimiq/jungle-db/-/jungle-db-0.9.20.tgz#e7757dde5c26d752e5c1356cc3d55302c6acefc9"
   integrity sha512-4N1yxLBepI7E4jJ9vz+EafnrbgSDZv9Pbgx5rVJlHwOZuO3m0R63gl6RzpJJ/kd7QAwgHV1DaT/yWc9NH7emKw==
@@ -76,11 +75,6 @@ are-we-there-yet@~1.1.2:
   dependencies:
     delegates "^1.0.0"
     readable-stream "^2.0.6"
-
-async-limiter@~1.0.0:
-  version "1.0.1"
-  resolved "https://registry.yarnpkg.com/async-limiter/-/async-limiter-1.0.1.tgz#dd379e94f0db8310b08291f9d64c3209766617fd"
-  integrity sha512-csOlWGAcRFJaI6m+F2WKdnMKr4HhdhFVBk0H/QbJFMCr+uO2kwohwXQPxw/9OCxp05r5ghVBFSyioixx3gfkNQ==
 
 atob@^2.0.3:
   version "2.1.2"
@@ -174,7 +168,7 @@ core-util-is@~1.0.0:
   resolved "https://registry.yarnpkg.com/core-util-is/-/core-util-is-1.0.2.tgz#b5fd54220aa2bc5ab57aab7140c940754503c1a7"
   integrity sha1-tf1UIgqivFq1eqtxQMlAdUUDwac=
 
-cpuid-git@^0.3.0:
+cpuid-git@^0.3.1:
   version "0.3.1"
   resolved "https://registry.yarnpkg.com/cpuid-git/-/cpuid-git-0.3.1.tgz#92d8fb707f6babc56a882772a7ef7ba00e1980bf"
   integrity sha512-xAVuFcRHNyCEB8FBqR+qTab+2i62/49TUXlDYA2hcZ3CID8SpwDlLg+YnQgG0rRGFy0GpcW4NryeUqQvKuBFCw==
@@ -320,6 +314,13 @@ json5@^1.0.1:
   dependencies:
     minimist "^1.2.0"
 
+json5@^2.1.0:
+  version "2.1.1"
+  resolved "https://registry.yarnpkg.com/json5/-/json5-2.1.1.tgz#81b6cb04e9ba496f1c7005d07b4368a2638f90b6"
+  integrity sha512-l+3HXD0GEI3huGq1njuqtzYK8OYJyXMkOLtQ53pjWh89tvWS2h6l+1zMkYWqlb57+SiQodKZyvMEFb2X+KrFhQ==
+  dependencies:
+    minimist "^1.2.0"
+
 level-concat-iterator@~2.0.0:
   version "2.0.1"
   resolved "https://registry.yarnpkg.com/level-concat-iterator/-/level-concat-iterator-2.0.1.tgz#1d1009cf108340252cb38c51f9727311193e6263"
@@ -441,7 +442,7 @@ mkdirp@^0.5.1:
   dependencies:
     minimist "0.0.8"
 
-nan@^2.10.0, nan@^2.13.1, nan@^2.14.0:
+nan@^2.13.1, nan@^2.14.0:
   version "2.14.0"
   resolved "https://registry.yarnpkg.com/nan/-/nan-2.14.0.tgz#7818f722027b2459a86f0295d434d1fc2336c52c"
   integrity sha512-INOFj37C7k3AfaNTtX8RhsTw7qRy7eLET14cROi9+5HAVbbHuIWUHEauBv5qT4Av2tWasiTY1Jw6puUNqRJXQg==
@@ -824,12 +825,10 @@ wrappy@1:
   resolved "https://registry.yarnpkg.com/wrappy/-/wrappy-1.0.2.tgz#b5243d8f3ec1aa35f1364605bc0d1036e30ab69f"
   integrity sha1-tSQ9jz7BqjXxNkYFvA0QNuMKtp8=
 
-ws@^5.2.0:
-  version "5.2.2"
-  resolved "https://registry.yarnpkg.com/ws/-/ws-5.2.2.tgz#dffef14866b8e8dc9133582514d1befaf96e980f"
-  integrity sha512-jaHFD6PFv6UgoIVda6qZllptQsMlDEJkTQcybzzXDYM1XO9Y8em691FGMPmM46WGyLU4z9KMgQN+qrux/nhlHA==
-  dependencies:
-    async-limiter "~1.0.0"
+ws@^7.0.1:
+  version "7.2.1"
+  resolved "https://registry.yarnpkg.com/ws/-/ws-7.2.1.tgz#03ed52423cd744084b2cf42ed197c8b65a936b8e"
+  integrity sha512-sucePNSafamSKoOqoNfBd8V0StlkzJKL2ZAhGQinCfNQ+oacw+Pk7lcdAElecBF2VkLNZRiIb5Oi1Q5lVUVt2A==
 
 xtend@^4.0.0, xtend@~4.0.0:
   version "4.0.2"
