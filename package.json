@@ -23,8 +23,7 @@
     "jasmine": "^3.1.0"
   },
   "dependencies": {
-    "@nimiq/core": "^1.4.3",
-    "@nimiq/jungle-db": "^0.9.14",
+    "@nimiq/core": "^1.5.4",
     "bignumber": "^1.1.0",
     "btoa": "^1.2.1",
     "jasmine-spec-reporter": "^4.2.1",
