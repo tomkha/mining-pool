@@ -135,7 +135,11 @@ class PoolServer extends Nimiq.Observable {
             database: 'pool'
         });
 
-        this._wss = PoolServer.createServer(this.port, this._sslKeyPath, this._sslCertPath);
+        let httpsServer = await this.startServer(this.port, this._sslKeyPath, this._sslCertPath);
+		// We have to access socket.remoteAddress here because otherwise req.connection.remoteAddress won't be set in the WebSocket's 'connection' event (yay)
+        httpsServer.on('secureConnection', socket => socket.remoteAddress);
+
+        this._wss = new WebSocket.Server({server: httpsServer});
         this._wss.on('connection', (ws, req) => this._onConnection(ws, req));
 
         this.consensus.blockchain.on('head-changed', (head) => {
@@ -143,6 +147,10 @@ class PoolServer extends Nimiq.Observable {
             this._flushSharesToDb();
             this._removeOldShares(head.header.prevHash);
         });
+    }
+
+    async startServer(...args) {
+        return await PoolServer.createServer(this.port, this._sslKeyPath, this._sslCertPath);
     }
 
     static createServer(port, sslKeyPath, sslCertPath) {
@@ -155,11 +163,8 @@ class PoolServer extends Nimiq.Observable {
             res.end('Nimiq Pool Server\n');
         }).listen(port);
 
-        // We have to access socket.remoteAddress here because otherwise req.connection.remoteAddress won't be set in the WebSocket's 'connection' event (yay)
-        httpsServer.on('secureConnection', socket => socket.remoteAddress);
-
         Nimiq.Log.i(PoolServer, "Started server on port " + port);
-        return new WebSocket.Server({server: httpsServer});
+        return httpsServer;
     }
 
     stop() {

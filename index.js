@@ -2,7 +2,8 @@ const Nimiq = require('@nimiq/core');
 const argv = require('minimist')(process.argv.slice(2));
 const config = require('./src/Config.js')(argv.config);
 
-const PoolServer = require('./src/PoolServer.js');
+//const PoolServer = require('./src/PoolServer.js');
+const PoolServer = require('./src/PoolUIServer.js');
 const PoolService = require('./src/PoolService.js');
 const PoolPayout = require('./src/PoolPayout.js');
 const MetricsServer = require('./src/MetricsServer.js');
@@ -113,7 +114,7 @@ for (const key in config.constantOverrides) {
     }
 
     if (config.poolServer.enabled) {
-        const poolServer = new PoolServer($.consensus, config.pool, config.poolServer.port, config.poolServer.mySqlPsw, config.poolServer.mySqlHost, config.poolServer.sslKeyPath, config.poolServer.sslCertPath, config.reverseProxy);
+        const poolServer = new PoolServer($.consensus, config.pool, config.poolServer.port, config.poolServer.mySqlPsw, config.poolServer.mySqlHost, config.poolServer.sslKeyPath, config.poolServer.sslCertPath, config.reverseProxy, config.host);
 
         if (config.poolMetricsServer.enabled) {
             $.metricsServer = new MetricsServer(config.poolServer.sslKeyPath, config.poolServer.sslCertPath, config.poolMetricsServer.port, config.poolMetricsServer.password);
