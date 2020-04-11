@@ -1,21 +1,12 @@
-const POOL_DESCRIPTION = {
-	description : "",
-	websiteLink : "",
-	communityLink : "",
-	payoutType : "Manual",
-	payoutFrequency : "",
-	// payoutType : "Automatic",
-	// payoutFrequency : "every 3 hours",
-	supportsNano : false
-};
-
 const Nimiq      = require("@nimiq/core");
 const https      = require("https");
 const mysql      = require("mysql2/promise");
 const fs         = require("fs");
 const PoolServer = require("./PoolServer.js");
 
-// Exists for development purposes when only running the endpoints.
+const Helper = require('./Helper.js');
+
+// Exists for development purposes when only running the endpoints using a stub index.js and PoolServer class.
 const isFake = !!PoolServer.isFake;
 
 const QUERIES = {
@@ -66,12 +57,12 @@ const QUERIES = {
 	payoutsForAddress  : `SELECT address, amount, datetime as timestamp, transaction as txHash FROM payout p INNER JOIN user u ON u.id=p.user WHERE u.address=? ORDER BY datetime DESC LIMIT 50;`,
 	blocksMinedForever : `SELECT main_chain as mainChain, count(distinct p.block) AS blockCount FROM block b JOIN payin p ON p.block = b.id GROUP BY b.main_chain;`,
 	blocksMined24Hours : `SELECT main_chain as mainChain, count(distinct p.block) AS blockCount FROM block b JOIN payin p ON p.block = b.id WHERE FROM_UNIXTIME(b.datetime) > NOW() - INTERVAL 24 HOUR GROUP BY b.main_chain;`,
-	blocksMinedList : `SELECT height, hash, datetime FROM payin p INNER JOIN block b ON p.block=b.id WHERE main_chain=1 GROUP BY height ORDER BY height DESC LIMIT 50;`,
+	blocksMinedList : `SELECT height, hash, datetime, height <= ? AS confirmed FROM payin p INNER JOIN block b ON p.block=b.id WHERE main_chain=1 GROUP BY height ORDER BY height DESC LIMIT 50;`,
 	hashrateHistory : `SELECT datetime AS time, (SELECT ROUND(SUM(CASE WHEN FROM_UNIXTIME(a.datetime) > FROM_UNIXTIME(b.datetime) - INTERVAL 1 HOUR THEN s.difficulty ELSE 0 END) * POW(2, 16) / 3600) FROM shares s JOIN block a ON s.prev_block=a.id WHERE FROM_UNIXTIME(a.datetime) < FROM_UNIXTIME(b.datetime) AND FROM_UNIXTIME(a.datetime) > FROM_UNIXTIME(b.datetime) - INTERVAL 1 HOUR) AS avgHR FROM block b WHERE (height%60=0 AND height<(SELECT MAX(height)-60 FROM block)) OR height=(SELECT MAX(height) FROM block) ORDER BY datetime DESC LIMIT 24`,
 	minerHistory : `SELECT datetime AS time, (SELECT ROUND(SUM(CASE WHEN FROM_UNIXTIME(a.datetime) > FROM_UNIXTIME(b.datetime) - INTERVAL 1 HOUR THEN s.difficulty ELSE 0 END) * POW(2, 16) / 3600) FROM shares s JOIN block a ON s.prev_block=a.id JOIN user u ON u.id=s.user WHERE u.address=? AND FROM_UNIXTIME(a.datetime) < FROM_UNIXTIME(b.datetime) AND FROM_UNIXTIME(a.datetime) > FROM_UNIXTIME(b.datetime) - INTERVAL 1 HOUR GROUP BY user) AS avgHR FROM block b WHERE (height%60=0 AND height<(SELECT MAX(height)-60 FROM block)) OR height=(SELECT MAX(height) FROM block) ORDER BY datetime DESC LIMIT 24;`,
 	minerTotalPayedOut : `SELECT SUM(amount) as amount FROM payout p JOIN user u ON u.id=p.user WHERE u.address=? GROUP BY address;`,
 	minerTotalEarned : `SELECT SUM(amount) as amount FROM payin p JOIN user u ON u.id=p.user JOIN block b ON p.block=b.id WHERE u.address=? AND main_chain=1 GROUP BY address;`,
-	minerTotalOwed : `SELECT SUM(amount) as amount FROM payin p JOIN user u ON u.id=p.user JOIN block b ON p.block=b.id WHERE u.address=? AND main_chain=1 AND (datetime * 1000) > (SELECT MAX(datetime) FROM payout) GROUP BY address;`
+	minerTotalOwed : `SELECT SUM(amount) as amount FROM payin p JOIN user u ON u.id=p.user JOIN block b ON p.block=b.id WHERE u.address=? AND main_chain=1 AND (datetime * 1000) > (SELECT MAX(datetime) FROM payout) AND height <= ? GROUP BY address;`
 };
 
 class PoolUIServer extends PoolServer {
@@ -97,8 +88,7 @@ class PoolUIServer extends PoolServer {
 	}
 
 	async queryDB(query, ...args) {
-		let result = await this.readOnlyConnection.execute(query, args);
-		return JSON.parse(JSON.stringify(result[0]));
+		return Helper.queryDB(this.readOnlyConnection, query, ...args);
 	}
 
 	static parseAddress(str) {
@@ -145,12 +135,12 @@ class PoolUIServer extends PoolServer {
 						address : poolServer.poolAddress.toUserFriendlyAddress(),
 						host : poolServer.host,
 						port : poolServer.port.toString(),
-						description : POOL_DESCRIPTION.description,
-						website : POOL_DESCRIPTION.websiteLink,
-						community : POOL_DESCRIPTION.communityLink,
+						description : poolServer.config.poolInfo.description,
+						website : poolServer.config.poolInfo.websiteLink,
+						community : poolServer.config.poolInfo.communityLink,
 						fees : (poolServer.config.poolFee * 100).toFixed(2) + "%",
-						payouts : POOL_DESCRIPTION.payoutType + " payouts " + POOL_DESCRIPTION.payoutFrequency + (POOL_DESCRIPTION.payoutFrequency ? " " : "") + "for balances over " + (poolServer.config.autoPayOutLimit / 100000).toFixed(2) + " NIM",
-						supportsNano : POOL_DESCRIPTION.supportsNano
+						payouts : poolServer.config.poolInfo.payoutType + " payouts " + poolServer.config.poolInfo.payoutFrequency + (poolServer.config.poolInfo.payoutFrequency ? " " : "") + "for balances over " + (poolServer.config.autoPayOutLimit / 100000).toFixed(2) + " NIM",
+						supportsNano : poolServer.config.poolInfo.supportsNano
 					};
 
 					replyToRequest(res, JSON.stringify(obj));
@@ -241,7 +231,7 @@ class PoolUIServer extends PoolServer {
 
 					let addr = PoolUIServer.parseAddress(arr[1]);
 
-					if (!addr) {
+					if (!addr || (arr[1].startsWith("NQ") && arr[1].split(" ").join("") != addr.toUserFriendlyAddress().split(" ").join(""))) {
 						return rejectRequest(res, {
 							error : "Incorrectly formatted address : '" + arr[1] + "'"
 						});
@@ -256,9 +246,11 @@ class PoolUIServer extends PoolServer {
 						};
 					});
 
+					const blocksConfirmedHeight = poolServer.consensus.blockchain.height - poolServer.config.payoutConfirmations;
+
 					let totalPayedOut = (await poolServer.queryDB(QUERIES.minerTotalPayedOut, addr.toBase64())).map(it => it.amount);
 					let totalEarned = (await poolServer.queryDB(QUERIES.minerTotalEarned, addr.toBase64())).map(it => it.amount);
-					let totalOwed = (await poolServer.queryDB(QUERIES.minerTotalOwed, addr.toBase64())).map(it => it.amount);
+					let totalOwed = (await poolServer.queryDB(QUERIES.minerTotalOwed, addr.toBase64(), blocksConfirmedHeight)).map(it => it.amount);
 
 					let payoutStats = (await poolServer.queryDB(QUERIES.payoutsForAddress, addr.toBase64())).map(it => {
 						return {
@@ -328,11 +320,14 @@ class PoolUIServer extends PoolServer {
 				name : "Blocks Mined List",
 				path : "/api/list/blocks",
 				runs : async (req, res, arr) => {
-					let result = (await poolServer.queryDB(QUERIES.blocksMinedList)).map(it => {
+					const blocksConfirmedHeight = poolServer.consensus.blockchain.height - poolServer.config.payoutConfirmations;
+
+					let result = (await poolServer.queryDB(QUERIES.blocksMinedList, blocksConfirmedHeight)).map(it => {
 						return {
 							height : it.height,
 							timestamp : it.datetime * 1000,
-							blockHash : /* "0x" + */ Nimiq.BufferUtils.toHex(Nimiq.SerialBuffer.from(it.hash.data))
+							blockHash : /* "0x" + */ Nimiq.BufferUtils.toHex(Nimiq.SerialBuffer.from(it.hash.data)),
+							confirmed : it.confirmed == 1
 						};
 					});
 					replyToRequest(res, result);

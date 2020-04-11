@@ -42,6 +42,14 @@ const DEFAULT_CONFIG = /** @type {Config} */ {
         payoutConfirmations: 10,
         autoPayOutLimit: 5000000, // 50 NIM
         poolFee: 0.01, // 1%
+        poolInfo: {
+            description : "",
+            websiteLink : "",
+            communityLink : "",
+            payoutType : "Manual",
+            payoutFrequency : "",
+            supportsNano : false
+        },
         networkFee: 1, // satoshi per byte
         startDifficulty: 1,
         minDifficulty: 1,

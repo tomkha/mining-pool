@@ -11,6 +11,11 @@ class Helper {
         return (1 - config.poolFee) * (Nimiq.Policy.blockRewardAt(block.height) + block.transactions.reduce((sum, tx) => sum + tx.fee, 0));
     }
 
+    async queryDB(connectionPool, query, ...args) {
+        let result = await connectionPool.execute(query, args);
+        return JSON.parse(JSON.stringify(result[0]));
+    }
+
     /**
      * @param {PoolConfig} config
      * @param {mysql2.Pool} connectionPool
