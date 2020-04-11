@@ -143,7 +143,7 @@ class PoolUIServer extends PoolServer {
 						supportsNano : poolServer.config.poolInfo.supportsNano
 					};
 
-					replyToRequest(res, JSON.stringify(obj));
+					replyToRequest(res, obj);
 				}
 			}, {
 				name : "Pool Stats",
