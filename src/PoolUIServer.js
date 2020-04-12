@@ -59,10 +59,10 @@ const QUERIES = {
 	blocksMined24Hours : `SELECT main_chain as mainChain, count(distinct p.block) AS blockCount FROM block b JOIN payin p ON p.block = b.id WHERE FROM_UNIXTIME(b.datetime) > NOW() - INTERVAL 24 HOUR GROUP BY b.main_chain;`,
 	blocksMinedList : `SELECT height, hash, datetime, height <= ? AS confirmed FROM payin p INNER JOIN block b ON p.block=b.id WHERE main_chain=1 GROUP BY height ORDER BY height DESC LIMIT 50;`,
 	hashrateHistory : `SELECT datetime AS time, (SELECT ROUND(SUM(CASE WHEN FROM_UNIXTIME(a.datetime) > FROM_UNIXTIME(b.datetime) - INTERVAL 1 HOUR THEN s.difficulty ELSE 0 END) * POW(2, 16) / 3600) FROM shares s JOIN block a ON s.prev_block=a.id WHERE FROM_UNIXTIME(a.datetime) < FROM_UNIXTIME(b.datetime) AND FROM_UNIXTIME(a.datetime) > FROM_UNIXTIME(b.datetime) - INTERVAL 1 HOUR) AS avgHR FROM block b WHERE (height%60=0 AND height<(SELECT MAX(height)-60 FROM block)) OR height=(SELECT MAX(height) FROM block) ORDER BY datetime DESC LIMIT 24`,
-	minerHistory : `SELECT datetime AS time, (SELECT ROUND(SUM(CASE WHEN FROM_UNIXTIME(a.datetime) > FROM_UNIXTIME(b.datetime) - INTERVAL 1 HOUR THEN s.difficulty ELSE 0 END) * POW(2, 16) / 3600) FROM shares s JOIN block a ON s.prev_block=a.id JOIN user u ON u.id=s.user WHERE u.address=? AND FROM_UNIXTIME(a.datetime) < FROM_UNIXTIME(b.datetime) AND FROM_UNIXTIME(a.datetime) > FROM_UNIXTIME(b.datetime) - INTERVAL 1 HOUR GROUP BY user) AS avgHR FROM block b WHERE (height%60=0 AND height<(SELECT MAX(height)-60 FROM block)) OR height=(SELECT MAX(height) FROM block) ORDER BY datetime DESC LIMIT 24;`,
-	minerTotalPayedOut : `SELECT SUM(amount) as amount FROM payout p JOIN user u ON u.id=p.user WHERE u.address=? GROUP BY address;`,
-	minerTotalEarned : `SELECT SUM(amount) as amount FROM payin p JOIN user u ON u.id=p.user JOIN block b ON p.block=b.id WHERE u.address=? AND main_chain=1 GROUP BY address;`,
-	minerTotalOwed : `SELECT SUM(amount) as amount FROM payin p JOIN user u ON u.id=p.user JOIN block b ON p.block=b.id WHERE u.address=? AND main_chain=1 AND (datetime * 1000) > (SELECT MAX(datetime) FROM payout) AND height <= ? GROUP BY address;`
+	minerHistory : `SELECT datetime AS time, (SELECT ROUND(SUM(CASE WHEN FROM_UNIXTIME(a.datetime) > FROM_UNIXTIME(b.datetime) - INTERVAL 1 HOUR THEN s.difficulty ELSE 0 END) * POW(2, 16) / 3600) FROM shares s JOIN block a ON s.prev_block=a.id JOIN user u ON u.id=s.user WHERE u.address=? AND FROM_UNIXTIME(a.datetime) < FROM_UNIXTIME(b.datetime) AND FROM_UNIXTIME(a.datetime) > FROM_UNIXTIME(b.datetime) - INTERVAL 1 HOUR GROUP BY user) AS avgHR FROM block b WHERE (height%60=0 AND height<(SELECT MAX(height)-60 FROM block)) OR height=(SELECT MAX(height) FROM block) ORDER BY datetime DESC LIMIT 24`,
+	minerTotalPayedOut : `SELECT SUM(amount) as amount FROM payout p JOIN user u ON u.id=p.user WHERE u.address=? GROUP BY address`,
+	minerTotalEarned : `SELECT SUM(amount) as amount FROM payin p JOIN user u ON u.id=p.user JOIN block b ON p.block=b.id WHERE u.address=? AND main_chain=1 GROUP BY address`,
+	minerTotalOwed : `SELECT SUM(amount) - (SELECT SUM(amount) as amount FROM payout p JOIN user u ON u.id=p.user WHERE u.address=?) as amount FROM payin  p JOIN user u ON u.id=p.user JOIN block b ON p.block=b.id WHERE u.address=? AND main_chain=1 AND height <= ? GROUP BY address`
 };
 
 class PoolUIServer extends PoolServer {
@@ -250,7 +250,7 @@ class PoolUIServer extends PoolServer {
 
 					let totalPayedOut = (await poolServer.queryDB(QUERIES.minerTotalPayedOut, addr.toBase64())).map(it => it.amount);
 					let totalEarned = (await poolServer.queryDB(QUERIES.minerTotalEarned, addr.toBase64())).map(it => it.amount);
-					let totalOwed = (await poolServer.queryDB(QUERIES.minerTotalOwed, addr.toBase64(), blocksConfirmedHeight)).map(it => it.amount);
+					let totalOwed = (await poolServer.queryDB(QUERIES.minerTotalOwed, addr.toBase64(), addr.toBase64(), blocksConfirmedHeight)).map(it => it.amount);
 
 					let payoutStats = (await poolServer.queryDB(QUERIES.payoutsForAddress, addr.toBase64())).map(it => {
 						return {
