@@ -27,7 +27,7 @@
     "bignumber": "^1.1.0",
     "btoa": "^1.2.1",
     "jasmine-spec-reporter": "^4.2.1",
-    "json5": "^1.0.1",
+    "json5": "^1.0.2",
     "lodash.merge": "^4.6.1",
     "minimist": "^1.2.3",
     "mysql2": "^1.6.5"
